@@ -19,9 +19,9 @@
 #include <curand_kernel.h>
 using namespace std;
 
-const float MAX = 5.12;
-const float MIN = -5.12;
-const int n_population = 1000;
+const double MAX = 5.12;
+const double MIN = -5.12;
+const int n_population = 100;
 const int n_parameters = 10;
 
 /**
@@ -33,7 +33,7 @@ const int n_parameters = 10;
     @param iterations the number of convolutions to go through.
     @param *w the pointer to the convolution window.
  */
-__global__ void generateIndividuals(float a[n_population][n_parameters], float min, float max) {
+__global__ void generateIndividuals(double a[n_population][n_parameters], double min, double max) {
 
         int index = blockIdx.x * blockDim.x + threadIdx.x;
         int stride = blockDim.x * gridDim.x;
@@ -43,12 +43,12 @@ __global__ void generateIndividuals(float a[n_population][n_parameters], float m
            for (int i=index; i<n_population; i+=stride) {
            for (int p=0; p<n_parameters; p++) {
 
-            float myrandf = curand_uniform(randState+i);
+            double myrandf = curand_uniform(randState+i);
             //myrandf *= (max_rand_int[index] - min_rand_int[index]+0.999999);
             //myrandf += min_rand_int[index];
             printf("%f\n", myrandf);
             a[i] = myrandf;
-            //a[i] = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/max));
+            //a[i] = static_cast <double> (rand()) / (static_cast <double> (RAND_MAX/max));
            }
            }
          */
@@ -57,18 +57,18 @@ __global__ void generateIndividuals(float a[n_population][n_parameters], float m
 
 struct prg
 {
-        float a, b;
+        double a, b;
 
         __host__ __device__
-        prg(float _a=0.f, float _b=1.f) : a(_a), b(_b) {
+        prg(double _a=0.f, double _b=1.f) : a(_a), b(_b) {
         };
 
         __host__ __device__
-        float operator()(const unsigned int n) const
+        double operator()(const unsigned int n) const
         {
-                //thrust::default_random_engine rng;
-                thrust::default_random_engine rng( 8675309 );
-                thrust::uniform_real_distribution<float> dist(a, b);
+                thrust::default_random_engine rng;
+                //thrust::default_random_engine rng( 5555555 );
+                thrust::uniform_real_distribution<double> dist(a, b);
                 rng.discard(n);
 
                 return dist(rng);
@@ -77,35 +77,22 @@ struct prg
 
 struct normal
 {
-        float a, b;
+        double a, b;
 
         __host__ __device__
-        normal(float _a=0.f, float _b=0.1f) : a(_a), b(_b) {
+        normal(double _a=0.f, double _b=0.1f) : a(_a), b(_b) {
         };
 
         __host__ __device__
-        float operator()(const unsigned int n) const
+        double operator()(const unsigned int n) const
         {
                 thrust::default_random_engine rng;
-                thrust::normal_distribution<float> dist(a, b);
+                thrust::normal_distribution<double> dist(a, b);
                 rng.discard(n);
 
                 return dist(rng);
         }
 };
-
-
-__host__ static __inline__ float randFloat() {
-        return MIN + static_cast <float> (rand()) /( static_cast <float> (RAND_MAX/(MAX-MIN)));
-}
-
-__host__ static __inline__ float randInt()
-{
-        return ((int)rand());
-}
-
-
-//__device__ evaluate()
 
 
 // square<T> computes the square of a number f(x) -> x*x
@@ -129,21 +116,21 @@ struct minus5
 };
 
 
-__host__ float evaluateMember(int index, float *array) {
-        float sum = 0;
+__host__ double evaluateMember(int index, double *array) {
+        double sum = 0;
         for (int i=0; i<n_parameters; i++) {
-                sum += pow(array[index*n_parameters+i] - 5, 2);
+                sum += pow(array[index*n_parameters+i] - 0.5, 2);
         }
         return sqrt(sum);
 }
 
 // return the biggest of two tuples
 template <class T>
-struct smaller_tuple {
+struct larger_tuple {
         __device__ __host__
         thrust::tuple<T,int> operator()(const thrust::tuple<T,int> &a, const thrust::tuple<T,int> &b)
         {
-                if (a < b) return a;
+                if (a > b) return a;
                 else return b;
         }
 
@@ -155,50 +142,40 @@ int min_index(thrust::device_vector<T>& vec) {
         // create implicit index sequence [0, 1, 2, ... )
         thrust::counting_iterator<int> begin(0); thrust::counting_iterator<int> end(vec.size());
         thrust::tuple<T,int> init(vec[0],0);
-        thrust::tuple<T,int> smallest;
+        thrust::tuple<T,int> largest;
 
-        smallest = thrust::reduce(thrust::make_zip_iterator(thrust::make_tuple(vec.begin(), begin)), thrust::make_zip_iterator(thrust::make_tuple(vec.end(), end)),
-                                  init, smaller_tuple<T>());
-        return get<1>(smallest);
+        largest = thrust::reduce(thrust::make_zip_iterator(thrust::make_tuple(vec.begin(), begin)), thrust::make_zip_iterator(thrust::make_tuple(vec.end(), end)),
+                                 init, larger_tuple<T>());
+        return get<1>(largest);
 }
 
 
-__host__ thrust::device_vector<float> pickParentSet(thrust::device_vector<float> population, thrust::device_vector<float> scores){
-        thrust::device_vector<float> parents(n_population/2);
-        thrust::fill(parents.begin(), parents.end(), 0.0);
+__host__ thrust::device_vector<double> evaluateGeneration(thrust::device_vector<double> population){
+        thrust::device_vector<double> popScores(n_population);
 
-        //int index = min_index(scores);
-
-        return parents;
-}
-
-__host__ thrust::device_vector<float> evaluateGeneration(thrust::device_vector<float> population){
-        thrust::device_vector<float> popScores(n_population);
-
-        thrust::device_vector<float> temp(population.size());
+        thrust::device_vector<double> temp(population.size());
         thrust::copy(thrust::device, population.begin(), population.end(), temp.begin());
 
-        thrust::transform(temp.begin(), temp.end(), temp.begin(), minus5<float>());
-        thrust::transform(temp.begin(), temp.end(), temp.begin(), square<float>());
+        thrust::transform(temp.begin(), temp.end(), temp.begin(), minus5<double>());
+        thrust::transform(temp.begin(), temp.end(), temp.begin(), square<double>());
 
         for (int i=0; i<n_population; i++) {
-                //std::cout << "Individual " << i << ":  ";
-                //for (int offset=0; offset<n_parameters; offset++) {
-                //        std::cout << population[i*n_parameters+offset] << " ";
-                //}
+                // std::cout << "Individual " << i << ":  ";
+                // for (int offset=0; offset<n_parameters; offset++) {
+                //         std::cout << population[i*n_parameters+offset] << " ";
+                // }
 
-                float score = std::sqrt(thrust::reduce(temp.begin()+i*n_parameters, temp.begin()+i*n_parameters+n_parameters, (float) 0, thrust::plus<float>()));
-                popScores[i] = (float) 1.0 / (float) (score+1.0);
+                double score = std::sqrt(thrust::reduce(temp.begin()+i*n_parameters, temp.begin()+i*n_parameters+n_parameters, (double) 0, thrust::plus<double>()));
+                popScores[i] = (double) 1.0 / (double) (score+1.0);
 
-                //std::cout << " - Score: " << score << endl;
+                // std::cout << " - Score: " << popScores[i] << endl;
         }
 
         return popScores;
 }
 
-__host__ thrust::device_vector<float> breed(thrust::device_vector<float> parentA, thrust::device_vector<float> parentB, int crossover){
-        thrust::device_vector<float> child(n_parameters);
-        //thrust::fill(child.begin(), child.end(), 1.0);
+__host__ thrust::device_vector<double> breed(thrust::device_vector<double> parentA, thrust::device_vector<double> parentB, int crossover){
+        thrust::device_vector<double> child(n_parameters);
 
         thrust::copy(thrust::device, parentA.begin(), parentA.begin()+crossover, child.begin());
         thrust::copy(thrust::device, parentB.begin()+crossover, parentB.end(), child.begin()+crossover);
@@ -207,10 +184,10 @@ __host__ thrust::device_vector<float> breed(thrust::device_vector<float> parentA
 }
 
 
-__host__ void printMember(thrust::device_vector<float> member){
+__host__ void printMember(thrust::device_vector<double> member){
         cout << "Member: ";
         for (int i=0; i<n_parameters; i++) {
-          cout << member[i] << " ";
+                cout << member[i] << " ";
         }
         cout << endl;
 }
@@ -219,7 +196,7 @@ __host__ void printMember(thrust::device_vector<float> member){
 // We need this function to define how to sort
 // the vector. We will pass this function into the
 // third parameter and it will tell it to sort descendingly.
-bool reverseSort(float i, float j) {
+bool reverseSort(double i, double j) {
         return i > j;
 }
 
@@ -228,61 +205,62 @@ int main(int argc, char** argv) {
         //srand (time(NULL));
         srand (static_cast <unsigned> (time(0)));
         std::default_random_engine generator;
-        std::normal_distribution<float> distribution(0, .01);
-        
+        std::normal_distribution<double> distribution(0, .01);
+
         // Cude Device Properties to see if the blocksize can be handled
         cudaDeviceProp prop;
         cudaGetDeviceProperties(&prop, 0);
 
         // Generate initial random population
-        thrust::device_vector<float> population(n_population * n_parameters);
+        thrust::device_vector<double> population(n_population * n_parameters);
         thrust::counting_iterator<unsigned int> index_sequence_begin(0);
         thrust::transform(index_sequence_begin,
                           index_sequence_begin + n_population * n_parameters,
                           population.begin(),
-                          prg(-5.12f,5.12f));
+                          prg(MIN, MAX));
+
 
         int generation = 0;
-        while (generation < 200) {
-                thrust::device_vector<float> newPopulation(n_population * n_parameters);
 
-                thrust::device_vector<float> popScores = evaluateGeneration(population);
+        thrust::device_vector<double> popScores = evaluateGeneration(population);
+        double best = *(thrust::max_element(popScores.begin(), popScores.end()));
+        int best_index = min_index(popScores);
 
-                float best = *(thrust::min_element(popScores.begin(), popScores.end()));
-                int best_index = min_index(popScores);
+        std::cout << "Initial generation " << generation << " Best score: " << best << " at index: " << best_index << "   ";
+        for (int i=0; i<n_parameters; i++) {
+                std::cout << population[best_index * n_parameters + i] << " ";
+        }
+        std::cout << endl;
 
-                std::cout << "Bred generation " << generation << " Best score: " << best << " at index: " << best_index << "   ";
-                for (int i=0; i<n_parameters; i++){
-                  std::cout << population[best_index * n_parameters + i] << " ";
-                } 
-                std::cout << endl;
 
+        while (generation < 100) {
+                thrust::device_vector<double> newPopulation(n_population * n_parameters);
 
                 int parentsPool[n_population];
                 for (int n=0; n<n_population; n+=2) {
                         int pool[7];
-                        float scores[7];
+                        double scores[7];
 
                         for (int i=0; i<7; i++) {
                                 pool[i] = (rand()%n_population);
                                 scores[i] = popScores[pool[i]];
                         }
-                        
+
                         // for (int y=0; y<7; y++) {
-                        //   std::cout << " " << scores[y];
+                        //         std::cout << " " << scores[y];
                         // }
                         // std::cout << endl;
-                        
-                        std::sort(scores, scores+7);
-                        // 
+
+                        std::sort(scores, scores+7, reverseSort);
+
                         // for (int y=0; y<7; y++) {
                         //   std::cout << " " << scores[y];
                         // }
                         // std::cout << endl;
                         // std::cout << "------------" << endl;
 
-                        float parent_a_score = scores[0];
-                        float parent_b_score = scores[1];
+                        double parent_a_score = scores[0];
+                        double parent_b_score = scores[1];
 
                         for (int s=0; s<7; s++) {
                                 if (popScores[pool[s]] == parent_a_score) {
@@ -302,46 +280,48 @@ int main(int argc, char** argv) {
                         int indexA = parentsPool[n];
                         int indexB = parentsPool[n+1];
                         int random = rand()%10;
-                        if (random < 1) {
-                          for (int k=0; k<n_parameters; k++) {
-                            newPopulation[n*n_parameters+k] = population[indexA*n_parameters+k];
-                            newPopulation[n+1*n_parameters+k] = population[indexB*n_parameters+k];
-                          }
-                        } else {
-                          int crossover = rand()%n_parameters;
-                          
-                          thrust::device_vector<float> parentA(n_parameters);
-                          thrust::copy(thrust::device, population.begin()+indexA*n_parameters, population.begin()+indexA*n_parameters+n_parameters, parentA.begin());
-                          
-                          thrust::device_vector<float> parentB(n_parameters);
-                          thrust::copy(thrust::device, population.begin()+indexB*n_parameters, population.begin()+indexB*n_parameters+n_parameters, parentB.begin());
-                          
-                          thrust::device_vector<float> childA = breed(parentA, parentB, crossover);
-                          thrust::device_vector<float> childB = breed(parentA, parentB, crossover);
-                          
-                          if (rand()%100 < 5) {
-                            int randIndex = rand()%n_parameters;
-                            double newval = childA[randIndex] += distribution(generator);
-                            childA[randIndex] = std::min(newval, 5.12);
-                            childA[randIndex] = std::max(newval, -5.12);
-                          }
+                        if (random == 1) {
+                                thrust::copy(thrust::device, population.begin()+indexA*n_parameters, population.begin()+indexA*n_parameters+n_parameters, newPopulation.begin()+n*n_parameters);
+                                thrust::copy(thrust::device, population.begin()+indexB*n_parameters, population.begin()+indexB*n_parameters+n_parameters, newPopulation.begin()+n*n_parameters+n_parameters);
 
-                          if (rand()%100 < 5) {
-                            int randIndex = rand()%n_parameters;
-                            double newval = childB[randIndex] += distribution(generator);
-                            childB[randIndex] = std::min(newval, 5.12);
-                            childB[randIndex] = std::max(newval, -5.12);
-                          }
-                          //for (int m=0; m<n_parameters; m++) {
-                          //  cout << childA[m] << " ";
-                          //}
-                          //cout << endl;
-                          
-                          //printMember(childA);
-                          //printMember(childB);
-                          
-                          thrust::copy(thrust::device, childA.begin(), childA.end(), newPopulation.begin()+n*n_parameters);
-                          thrust::copy(thrust::device, childB.begin(), childB.end(), newPopulation.begin()+n+1*n_parameters);
+                        } else {
+                                int crossover = rand()%n_parameters;
+
+                                thrust::device_vector<double> parentA(n_parameters);
+                                thrust::copy(thrust::device, population.begin()+indexA*n_parameters, population.begin()+indexA*n_parameters+n_parameters, parentA.begin());
+
+                                thrust::device_vector<double> parentB(n_parameters);
+                                thrust::copy(thrust::device, population.begin()+indexB*n_parameters, population.begin()+indexB*n_parameters+n_parameters, parentB.begin());
+
+                                thrust::device_vector<double> childA = breed(parentA, parentB, crossover);
+                                thrust::device_vector<double> childB = breed(parentB, parentA, crossover);
+
+                                if (rand()%100 < 5) {
+                                        int randIndex = rand()%n_parameters;
+                                        double newval = childA[randIndex] += distribution(generator);
+                                        childA[randIndex] = std::min(newval, MAX);
+                                        childA[randIndex] = std::max(newval, MIN);
+                                }
+
+                                if (rand()%100 < 5) {
+                                        int randIndex = rand()%n_parameters;
+                                        double newval = childB[randIndex] += distribution(generator);
+                                        childB[randIndex] = std::min(newval, MAX);
+                                        childB[randIndex] = std::max(newval, MIN);
+                                }
+
+
+
+                                //for (int m=0; m<n_parameters; m++) {
+                                //  cout << childA[m] << " ";
+                                //}
+                                //cout << endl;
+
+                                //printMember(childA);
+                                //printMember(childB);
+
+                                thrust::copy(thrust::device, childA.begin(), childA.end(), newPopulation.begin()+n*n_parameters);
+                                thrust::copy(thrust::device, childB.begin(), childB.end(), newPopulation.begin()+n*n_parameters+n_parameters);
                         }
 
 
@@ -350,6 +330,16 @@ int main(int argc, char** argv) {
 
 
                 thrust::copy(thrust::device, newPopulation.begin(), newPopulation.end(), population.begin());
+                popScores = evaluateGeneration(population);
+
+                best = *(thrust::min_element(popScores.begin(), popScores.end()));
+                best_index = min_index(popScores);
+
+                std::cout << "Bred generation " << generation << " Best score: " << best << " at index: " << best_index << "   ";
+                for (int i=0; i<n_parameters; i++) {
+                        std::cout << population[best_index * n_parameters + i] << " ";
+                }
+                std::cout << endl;
 
                 generation++;
         }
