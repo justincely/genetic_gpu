@@ -22,7 +22,7 @@ using namespace std;
 const double MAX = 5.12;
 const double MIN = -5.12;
 const int n_population = 1000;
-const int n_parameters = 100;
+const int n_parameters = 10;
 
 
 struct prg
@@ -113,25 +113,19 @@ __global__ void pickParents(unsigned int n, unsigned int np, int *randParents, d
         int index = blockIdx.x * blockDim.x + threadIdx.x;
         int stride = blockDim.x * gridDim.x;
 
-        if (index < n) {
-                for (int i=index; i < n; i += stride) {
-
-                    double best = 0;
-                    double best_index = 0;
-                    int idx;
-                    for (int j=0; j<7; j++) {
+        for (int i=index; i<n; i+=stride) {
+                double best = -1.0;
+                int best_index = -1;
+                int idx;
+                for (int j=0; j<7; j++) {
                         idx = randParents[i*7+j];
                         if (score[idx] > best) {
-                            best = score[idx];
-                            best_index = idx;
+                                best = score[idx];
+                                best_index = idx;
                         }
-                    }
-
-                    pool[i] = best_index;
-                    
                 }
+                pool[i] = best_index;
         }
-
 }
 
 __host__ thrust::device_vector<double> breed(thrust::device_vector<double> parentA, thrust::device_vector<double> parentB, int crossover){
@@ -156,20 +150,20 @@ __host__ void printMember(thrust::device_vector<double> member){
 /* this GPU kernel function is used to initialize the random states */
 __global__ void init(unsigned int seed, curandState_t* states) {
 
-  int idx = threadIdx.x+blockDim.x*blockIdx.x;
+        int idx = threadIdx.x+blockDim.x*blockIdx.x;
 
-  /* we have to initialize the state */
-  curand_init(seed, idx, 0,  &states[idx]);
+        /* we have to initialize the state */
+        curand_init(seed, idx, 0,  &states[idx]);
 }
 
 /* this GPU kernel takes an array of states, and an array of ints, and puts a random int into each */
 __global__ void setRandom(curandState_t* states, int* numbers) {
-  int idx = threadIdx.x+blockDim.x*blockIdx.x;
+        int idx = threadIdx.x+blockDim.x*blockIdx.x;
 
-  /* curand works like rand - except that it takes a state as a parameter */
-  for (int i=0; i<7; i++) {
-    numbers[idx+i] = curand(&states[idx]) % n_population;
-  }
+        /* curand works like rand - except that it takes a state as a parameter */
+        for (int i=0; i<7; i++) {
+                numbers[idx+i] = curand(&states[idx]) % n_population;
+        }
 }
 
 
@@ -207,7 +201,7 @@ int main(int argc, char** argv) {
         double* tempPtr = thrust::raw_pointer_cast(&population[0]);
         double* scoresPtr = thrust::raw_pointer_cast(&popScores[0]);
         score<<<2048, 1024>>>(n_population, n_parameters, tempPtr, scoresPtr);
-        
+
         double best = *(thrust::max_element(popScores.begin(), popScores.end()));
         int best_index = min_index(popScores);
 
@@ -240,9 +234,9 @@ int main(int argc, char** argv) {
 
                 // Create random states and initialize
                 curandState_t* states;
-                cudaMalloc((void**) &states, n_population * sizeof(curandState_t));
-                
-                init<<<n_population, 1>>>(time(0), states);
+                cudaMalloc((void**) &states, n_population*7* sizeof(curandState_t));
+
+                init<<<n_population*7, 1>>>(time(0), states);
 
                 int randomPool[n_population*7];
 
@@ -250,16 +244,21 @@ int main(int argc, char** argv) {
                 int *randParents;
                 printf("generating random numbers\n");
                 cudaMalloc((void**)&randParents, n_population*7*sizeof(int));
-                setRandom<<<n_population, 1>>>(states, randParents);
+                setRandom<<<n_population*7, 1>>>(states, randParents);
 
                 int *parentsPool_d;
                 cudaMalloc((void**)&parentsPool_d, n_population*sizeof(int));
 
                 double* scorePtr = thrust::raw_pointer_cast(&popScores[0]);
-                pickParents<<<2048, 1024>>>(n_population, n_parameters, randParents, scorePtr, parentsPool_d); 
-                
+                pickParents<<<2048, 1024>>>(n_population, n_parameters, randParents, scorePtr, parentsPool_d);
+
                 int parentsPool[n_population];
                 cudaMemcpy(parentsPool, parentsPool_d, n_population*sizeof(int), cudaMemcpyDeviceToHost);
+                
+                // for (int y=0; y<n_population; y++) {
+                //   cout << "parent: " << parentsPool[y] << " score " << popScores[parentsPool[y]] <<endl;
+                // }
+
 
                 //for (int n=0; n<n_population; n+=2) {
                 //        int pool[7];
@@ -388,9 +387,9 @@ int main(int argc, char** argv) {
                 std::cout << "Copy to new gen took " << elapsedTime/1000 << " (seconds)" << endl;
 
                 std::cout << "Bred generation " << generation << " Best score: " << best << " at index: " << best_index << "   ";
-                //for (int i=0; i<n_parameters; i++) {
-                //        std::cout << population[best_index * n_parameters + i] << " ";
-                //}
+                for (int i=0; i<n_parameters; i++) {
+                       std::cout << population[best_index * n_parameters + i] << " ";
+                }
                 std::cout << endl;
 
                 // Create stop events
