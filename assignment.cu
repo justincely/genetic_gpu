@@ -14,15 +14,20 @@
 #include <thrust/copy.h>
 #include <cstdlib>
 
+/* parse cmdline options */
+#include <boost/program_options.hpp>
+#include <exception>
+
 /* we need these includes for CUDA's random number stuff */
 #include <curand.h>
 #include <curand_kernel.h>
 using namespace std;
+namespace po = boost::program_options;
 
 const double MAX = 5.12;
 const double MIN = -5.12;
-const int n_population = 200;
-const int n_parameters = 10;
+int n_population = 200;
+int n_parameters = 10;
 
 
 struct prg
@@ -142,9 +147,9 @@ __global__ void breedGeneration(unsigned int n, unsigned int np, int *randomPara
 
         for (int i=index; i<n; i+=stride) {
                 probCopyParents = randomParameters[i*4];
-                crossover = randomParameters[(i+1)*4] % n_parameters;
+                crossover = randomParameters[(i+1)*4] % np;
                 probChildAMutate = randomParameters[(i+2)*4];
-                mutationPoint = randomParameters[(i+3)*4] % n_parameters;
+                mutationPoint = randomParameters[(i+3)*4] % np;
                 parentA = parentsPool[i];
                 parentB = parentsPool[i+1];
 
@@ -153,25 +158,25 @@ __global__ void breedGeneration(unsigned int n, unsigned int np, int *randomPara
 
                 if (probCopyParents < 10) {
                         for (int j=0; j<np; j++) {
-                                newPopulation[(i*n_parameters) + j] = population[(parentA*n_parameters) + j];
+                                newPopulation[(i*np) + j] = population[(parentA*np) + j];
                                 //newPopulation[((i+1)*n_parameters) + j] = population[(parentB*n_parameters) + j];
                         }
                 }
 
                 for (int j=0; j<np; j++) {
                         if (j < crossover) {
-                                newPopulation[(i*n_parameters) + j] = population[(parentA*n_parameters) + j];
+                                newPopulation[(i*np) + j] = population[(parentA*np) + j];
                                 //newPopulation[((i+1)*n_parameters) + j] = population[(parentB*n_parameters) + j];
                         } else {
-                                newPopulation[(i*n_parameters) + j] = population[(parentB*n_parameters) + j];
+                                newPopulation[(i*np) + j] = population[(parentB*np) + j];
                                 //newPopulation[((i+1)*n_parameters) + j] = population[(parentA*n_parameters) + j];
                         }
                 }
 
                 if (probChildAMutate < 5) {
-                        double newval = newPopulation[(i*n_parameters) + mutationPoint] + mutations[i];
-                        newPopulation[(i*n_parameters) + mutationPoint] = fminf(newval, MAX);
-                        newPopulation[(i*n_parameters) + mutationPoint] = fmaxf(newval, MIN);
+                        double newval = newPopulation[(i*np) + mutationPoint] + mutations[i];
+                        newPopulation[(i*np) + mutationPoint] = fminf(newval, MAX);
+                        newPopulation[(i*np) + mutationPoint] = fmaxf(newval, MIN);
                 }
 
         }
@@ -197,7 +202,7 @@ __global__ void init(unsigned int seed, curandState_t* states) {
 }
 
 /* this GPU kernel takes an array of states, and an array of ints, and puts a random int into each */
-__global__ void setRandom(curandState_t* states, int* numbers) {
+__global__ void setRandom(curandState_t* states, int* numbers, int n_population) {
         int idx = threadIdx.x+blockDim.x*blockIdx.x;
 
         /* curand works like rand - except that it takes a state as a parameter */
@@ -224,12 +229,22 @@ bool reverseSort(double i, double j) {
         return i > j;
 }
 
+
 int main(int argc, char** argv) {
+        // Parse Argument variables
+        if (argc >= 2) {
+                n_population = atoi(argv[1]);
+        }
+        if (argc >= 3) {
+                n_parameters = atoi(argv[2]);
+        }
+
+
         /* initialize random seed for timing purposes */
         //srand (time(NULL));
         srand (static_cast <unsigned> (time(0)));
         std::default_random_engine generator;
-        std::normal_distribution<double> distribution(0, .01);
+        std::normal_distribution<double> distribution(0, .1);
 
         // Cude Device Properties to see if the blocksize can be handled
         cudaDeviceProp prop;
@@ -282,10 +297,11 @@ int main(int argc, char** argv) {
         cudaMalloc((void**)&randParams_d, n_population*4*sizeof(int));
 
         while (best < .99) {
+        //while (generation < 2000) {
                 init<<<n_population*7, 1>>>(time(0), states);
                 // Setup device memory and generate random numbers
 
-                setRandom<<<n_population*7, 1>>>(states, randParents);
+                setRandom<<<n_population*7, 1>>>(states, randParents, n_population);
 
                 double* scorePtr = thrust::raw_pointer_cast(&popScores[0]);
                 pickParents<<<2048, 1024>>>(n_population, n_parameters, randParents, scorePtr, parentsPool_d);
