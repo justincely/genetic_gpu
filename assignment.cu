@@ -21,7 +21,7 @@ using namespace std;
 
 const double MAX = 5.12;
 const double MIN = -5.12;
-const int n_population = 1000;
+const int n_population = 200;
 const int n_parameters = 10;
 
 
@@ -128,15 +128,55 @@ __global__ void pickParents(unsigned int n, unsigned int np, int *randParents, d
         }
 }
 
-__host__ thrust::device_vector<double> breed(thrust::device_vector<double> parentA, thrust::device_vector<double> parentB, int crossover){
-        thrust::device_vector<double> child(n_parameters);
 
-        thrust::copy(thrust::device, parentA.begin(), parentA.begin()+crossover, child.begin());
-        thrust::copy(thrust::device, parentB.begin()+crossover, parentB.end(), child.begin()+crossover);
+__global__ void breedGeneration(unsigned int n, unsigned int np, int *randomParameters, double *population, double *newPopulation, int *parentsPool, double *mutations) {
+        int index = blockIdx.x * blockDim.x + threadIdx.x;
+        int stride = blockDim.x * gridDim.x;
 
-        return child;
+        int parentA;
+        int parentB;
+        int probCopyParents;
+        int crossover;
+        int probChildAMutate;
+        int mutationPoint;
+
+        for (int i=index; i<n; i+=stride) {
+                probCopyParents = randomParameters[i*4];
+                crossover = randomParameters[(i+1)*4] % n_parameters;
+                probChildAMutate = randomParameters[(i+2)*4];
+                mutationPoint = randomParameters[(i+3)*4] % n_parameters;
+                parentA = parentsPool[i];
+                parentB = parentsPool[i+1];
+
+                //printf("index: %d, parentA: %d, parentB: %d, Copy Parents: %d\n", index, parentA, parentB, probCopyParents);
+                //printf("index: %d, crossover: %d, mutateA: %d, mutateB: %d\n", index, crossover, probChildAMutate, probChildBMutate);
+
+                if (probCopyParents < 10) {
+                        for (int j=0; j<np; j++) {
+                                newPopulation[(i*n_parameters) + j] = population[(parentA*n_parameters) + j];
+                                //newPopulation[((i+1)*n_parameters) + j] = population[(parentB*n_parameters) + j];
+                        }
+                }
+
+                for (int j=0; j<np; j++) {
+                        if (j < crossover) {
+                                newPopulation[(i*n_parameters) + j] = population[(parentA*n_parameters) + j];
+                                //newPopulation[((i+1)*n_parameters) + j] = population[(parentB*n_parameters) + j];
+                        } else {
+                                newPopulation[(i*n_parameters) + j] = population[(parentB*n_parameters) + j];
+                                //newPopulation[((i+1)*n_parameters) + j] = population[(parentA*n_parameters) + j];
+                        }
+                }
+
+                if (probChildAMutate < 5) {
+                        double newval = newPopulation[(i*n_parameters) + mutationPoint] + mutations[i];
+                        newPopulation[(i*n_parameters) + mutationPoint] = fminf(newval, MAX);
+                        newPopulation[(i*n_parameters) + mutationPoint] = fmaxf(newval, MIN);
+                }
+
+        }
+
 }
-
 
 __host__ void printMember(thrust::device_vector<double> member){
         cout << "Member: ";
@@ -167,6 +207,15 @@ __global__ void setRandom(curandState_t* states, int* numbers) {
 }
 
 
+/* this GPU kernel takes an array of states, and an array of ints, and puts a random int into each */
+__global__ void setRandomPercent(curandState_t* states, int* numbers) {
+        int idx = threadIdx.x+blockDim.x*blockIdx.x;
+
+        /* curand works like rand - except that it takes a state as a parameter */
+        for (int i=0; i<7; i++) {
+                numbers[idx+i] = curand(&states[idx]) % 100;
+        }
+}
 
 // We need this function to define how to sort
 // the vector. We will pass this function into the
@@ -198,9 +247,12 @@ int main(int argc, char** argv) {
         int generation = 0;
 
         thrust::device_vector<double> popScores(n_population);
-        double* tempPtr = thrust::raw_pointer_cast(&population[0]);
+        thrust::device_vector<double> newPopulation(n_population * n_parameters);
+
+        double* popPtr = thrust::raw_pointer_cast(&population[0]);
+        double* newPopPtr = thrust::raw_pointer_cast(&newPopulation[0]);
         double* scoresPtr = thrust::raw_pointer_cast(&popScores[0]);
-        score<<<2048, 1024>>>(n_population, n_parameters, tempPtr, scoresPtr);
+        score<<<2048, 1024>>>(n_population, n_parameters, popPtr, scoresPtr);
 
         double best = *(thrust::max_element(popScores.begin(), popScores.end()));
         int best_index = min_index(popScores);
@@ -211,198 +263,62 @@ int main(int argc, char** argv) {
         }
         std::cout << endl;
 
-        // begin timing functions
-        float elapsedTime;
-        cudaEvent_t startEvent, stopEvent;
-        // Create start and stop events
-        cudaEventCreate(&startEvent);
-        cudaEventCreate(&stopEvent);
+        // Create random states and initialize
+        curandState_t* states;
+        cudaMalloc((void**) &states, n_population*7*sizeof(curandState_t));
 
-        cudaEvent_t startEvent2, stopEvent2;
-        // Create start and stop events
-        cudaEventCreate(&startEvent2);
-        cudaEventCreate(&stopEvent2);
+        int *randParents;
+        cudaMalloc((void**)&randParents, n_population*7*sizeof(int));
+
+        int *parentsPool_d;
+        cudaMalloc((void**)&parentsPool_d, n_population*sizeof(int));
+
+        // Create random states and initialize
+        curandState_t* childStates;
+        cudaMalloc((void**) &childStates, n_population*4*sizeof(curandState_t));
+
+        // Setup device memory and generate random numbers
+        int *randParams_d;
+        cudaMalloc((void**)&randParams_d, n_population*4*sizeof(int));
 
         while (best < .99) {
-                // Time array creation
-                cudaEventRecord(startEvent, 0);
-
-                thrust::device_vector<double> newPopulation(n_population * n_parameters);
-
-                // Time array creation
-                cudaEventRecord(startEvent2, 0);
-
-                // Create random states and initialize
-                curandState_t* states;
-                cudaMalloc((void**) &states, n_population*7* sizeof(curandState_t));
-
                 init<<<n_population*7, 1>>>(time(0), states);
-
-                int randomPool[n_population*7];
-
                 // Setup device memory and generate random numbers
-                int *randParents;
-                printf("generating random numbers\n");
-                cudaMalloc((void**)&randParents, n_population*7*sizeof(int));
-                setRandom<<<n_population*7, 1>>>(states, randParents);
 
-                int *parentsPool_d;
-                cudaMalloc((void**)&parentsPool_d, n_population*sizeof(int));
+                setRandom<<<n_population*7, 1>>>(states, randParents);
 
                 double* scorePtr = thrust::raw_pointer_cast(&popScores[0]);
                 pickParents<<<2048, 1024>>>(n_population, n_parameters, randParents, scorePtr, parentsPool_d);
 
-                int parentsPool[n_population];
-                cudaMemcpy(parentsPool, parentsPool_d, n_population*sizeof(int), cudaMemcpyDeviceToHost);
-                
-                // for (int y=0; y<n_population; y++) {
-                //   cout << "parent: " << parentsPool[y] << " score " << popScores[parentsPool[y]] <<endl;
-                // }
+                init<<<n_population*4, 1>>>(time(0), childStates);
 
+                setRandomPercent<<<n_population*4, 1>>>(childStates, randParams_d);
 
-                //for (int n=0; n<n_population; n+=2) {
-                //        int pool[7];
-                //        double scores[7];
+                // Generate initial random population
+                thrust::device_vector<double> mutations(n_population);
+                thrust::counting_iterator<unsigned int> index_sequence_begin(0);
+                thrust::transform(index_sequence_begin,
+                                  index_sequence_begin + n_population,
+                                  mutations.begin(),
+                                  normal(0.0, 0.001));
+                double* mutPtr = thrust::raw_pointer_cast(&mutations[0]);
 
-                //        for (int i=0; i<7; i++) {
-                //                pool[i] = (rand()%n_population);
-                //                scores[i] = popScores[pool[i]];
-                //        }
-
-                //        std::sort(scores, scores+7, reverseSort);
-
-                //        double parent_a_score = scores[0];
-                //        double parent_b_score = scores[1];
-
-                //        for (int s=0; s<7; s++) {
-                //                if (popScores[pool[s]] == parent_a_score) {
-                //                        parentsPool[n] = pool[s];
-                //                }
-                //               if (popScores[pool[s]] == parent_b_score) {
-                //                        parentsPool[n+1] = pool[s];
-                //                }
-                //        }
-                //}
-
-                // Create stop events
-                cudaEventRecord(stopEvent2, 0);
-                cudaEventSynchronize(stopEvent2);
-
-                // Print total elapsted seconds
-                cudaEventElapsedTime(&elapsedTime, startEvent2, stopEvent2);
-                std::cout << "Picking parents took " << elapsedTime/1000 << " (seconds)" << endl;
-
-                cudaEventRecord(startEvent2, 0);
-
-                // parent arrays
-                thrust::device_vector<double> parentA(n_parameters);
-                thrust::device_vector<double> parentB(n_parameters);
-                // children
-                thrust::device_vector<double> childA(n_parameters);
-                thrust::device_vector<double> childB(n_parameters);
-                for (int n=0; n<n_population; n+=2) {
-                        //cout << "Parent A: " << parentsPool[n] << " Score: " << popScores[parentsPool[n]];
-                        //cout <<" Parent B: " << parentsPool[n+1] << " Score: " << popScores[parentsPool[n]];
-                        //cout << endl;
-
-                        int indexA = parentsPool[n];
-                        int indexB = parentsPool[n+1];
-                        int random = rand()%10;
-                        if (random == 1) {
-                                thrust::copy(thrust::device, population.begin()+indexA*n_parameters, population.begin()+indexA*n_parameters+n_parameters, newPopulation.begin()+n*n_parameters);
-                                thrust::copy(thrust::device, population.begin()+indexB*n_parameters, population.begin()+indexB*n_parameters+n_parameters, newPopulation.begin()+n*n_parameters+n_parameters);
-
-                        } else {
-                                int crossover = rand()%n_parameters;
-
-                                //thrust::device_vector<double> parentA(n_parameters);
-                                thrust::copy(thrust::device, population.begin()+indexA*n_parameters, population.begin()+indexA*n_parameters+n_parameters, parentA.begin());
-
-                                //thrust::device_vector<double> parentB(n_parameters);
-                                thrust::copy(thrust::device, population.begin()+indexB*n_parameters, population.begin()+indexB*n_parameters+n_parameters, parentB.begin());
-
-                                childA = breed(parentA, parentB, crossover);
-                                childB = breed(parentB, parentA, crossover);
-
-                                if (rand()%100 < 5) {
-                                        int randIndex = rand()%n_parameters;
-                                        double newval = childA[randIndex] += distribution(generator);
-                                        childA[randIndex] = std::min(newval, MAX);
-                                        childA[randIndex] = std::max(newval, MIN);
-                                }
-
-                                if (rand()%100 < 5) {
-                                        int randIndex = rand()%n_parameters;
-                                        double newval = childB[randIndex] += distribution(generator);
-                                        childB[randIndex] = std::min(newval, MAX);
-                                        childB[randIndex] = std::max(newval, MIN);
-                                }
-
-
-
-                                //for (int m=0; m<n_parameters; m++) {
-                                //  cout << childA[m] << " ";
-                                //}
-                                //cout << endl;
-
-                                //printMember(childA);
-                                //printMember(childB);
-
-                                thrust::copy(thrust::device, childA.begin(), childA.end(), newPopulation.begin()+n*n_parameters);
-                                thrust::copy(thrust::device, childB.begin(), childB.end(), newPopulation.begin()+n*n_parameters+n_parameters);
-                        }
-
-
-                }
-                // Create stop events
-                cudaEventRecord(stopEvent2, 0);
-                cudaEventSynchronize(stopEvent2);
-
-                // Print total elapsted seconds
-                cudaEventElapsedTime(&elapsedTime, startEvent2, stopEvent2);
-                std::cout << "Creating children took " << elapsedTime/1000 << " (seconds)" << endl;
+                breedGeneration<<<2048, 1024>>>(n_population, n_parameters, randParams_d, popPtr, newPopPtr, parentsPool_d, mutPtr);
 
                 thrust::copy(thrust::device, newPopulation.begin(), newPopulation.end(), population.begin());
 
-                cudaEventRecord(startEvent2, 0);
-                tempPtr = thrust::raw_pointer_cast(&population[0]);
-                scoresPtr = thrust::raw_pointer_cast(&popScores[0]);
-                score<<<2048, 1024>>>(n_population, n_parameters, tempPtr, scoresPtr);
-                // Print total elapsted seconds
-                // Create stop events
-                cudaEventRecord(stopEvent2, 0);
-                cudaEventSynchronize(stopEvent2);
-                cudaEventElapsedTime(&elapsedTime, startEvent2, stopEvent2);
-                std::cout << "compute scores " << elapsedTime/1000 << " (seconds)" << endl;
-
+                score<<<2048, 1024>>>(n_population, n_parameters, popPtr, scoresPtr);
                 best = *(thrust::min_element(popScores.begin(), popScores.end()));
                 best_index = min_index(popScores);
 
-                // Create stop events
-                cudaEventRecord(stopEvent2, 0);
-                cudaEventSynchronize(stopEvent2);
-
-                // Print total elapsted seconds
-                cudaEventElapsedTime(&elapsedTime, startEvent2, stopEvent2);
-                std::cout << "Copy to new gen took " << elapsedTime/1000 << " (seconds)" << endl;
-
                 std::cout << "Bred generation " << generation << " Best score: " << best << " at index: " << best_index << "   ";
                 for (int i=0; i<n_parameters; i++) {
-                       std::cout << population[best_index * n_parameters + i] << " ";
+                        std::cout << population[best_index * n_parameters + i] << " ";
                 }
                 std::cout << endl;
 
-                // Create stop events
-                cudaEventRecord(stopEvent, 0);
-                cudaEventSynchronize(stopEvent);
-
-                // Print total elapsted seconds
-                cudaEventElapsedTime(&elapsedTime, startEvent, stopEvent);
-                std::cout << "Generation took " << elapsedTime/1000 << " (seconds)" << endl;
-
                 generation++;
         }
-
 
         return 0;
 }
