@@ -3,19 +3,22 @@
 This project uses a genetic approach to minimize a specific function with N parameters.  The general 
 approach is:
 
-- Generate an initial popluation of <n_population> randomly created members
+- Generate an initial population of randomly created members
 - Evaluate the fitness of all the members against the function to minimize
 - "Breed" the parents to create a child generation
-    - Children take a random half of their parameters from each parent
-    - Children are randomley mutated 10% of the time
-- Iterate and continue until the function is minimized to a given tolerance (.99)
+    - 10% of the time, a parent just moves into the next generation without producing children
+    - 90% of the time:
+        - Children take a random half of their parameters from each parent
+        - Children are randomly mutated 5% of the time
+- Iterate and continue until the function is minimized to a given tolerance (.999)
  
 
 ## Build and Run
 - `make`
-- `./assignment.exe <n_population> <n_parameters>`
+- `./assignment.exe <n_population> <n_parameters> <n_threads> <block_size>`
+  - *note* the `n_threads` and `block_size` does not pass to _all_ GPU functions.  Many operations are preformed by the Thrust library, which controls it's threading internally.
 
-## Timeings:
+## Example Timings:
 ### Time to 2000 Generations
 1. 1000 10: 0m9.878s
 2. 2000 10: 0m19.661s 
